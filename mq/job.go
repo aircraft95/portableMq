@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/mediocregopher/radix/v3"
 	"gomq/redis"
+	"gopkg.in/mgo.v2/bson"
 	"math/big"
 )
 
@@ -28,14 +29,19 @@ type Queue struct {
 	Name   string
 }
 
+type Message struct {
+	Id   string
+	Data interface{}
+}
+
 func NewQueue(jobName string, i int64) *Queue {
 	key := fmt.Sprintf(":list-%d", i)
 	queue := &Queue{Name: jobName+key}
 	return queue
 }
 
-func (queue *Queue) push (data interface{}) (err error)  {
-	dataByte ,err := json.Marshal(data)
+func (queue *Queue) push (message Message) (err error)  {
+	dataByte ,err := json.Marshal(message)
 
 	if err != nil {
 		return
@@ -51,7 +57,7 @@ func (queue *Queue) push (data interface{}) (err error)  {
 	return
 }
 
-func (queue *Queue) pop() (value []byte,err error)  {
+func (queue *Queue) receive() (message Message , err error)  {
 	con := redis.GetPool()
 	var val []string
 	err = con.Do(radix.Cmd(&val, "BLPOP", queue.Name, "10"))
@@ -59,8 +65,16 @@ func (queue *Queue) pop() (value []byte,err error)  {
 		return
 	}
 	if len(val) == 2 {
-		value = []byte(val[1])
+		value := []byte(val[1])
+		json.Unmarshal(value, &message)
+	} else {
+		err = errors.New("no message")
 	}
+	return
+}
+
+func (queue *Queue) DeleteMessage(value []byte)   {
+
 	return
 }
 
@@ -82,13 +96,31 @@ func (job *Job) getList() *Queue {
 
 func (job *Job) Push(data interface{}) (err error) {
 	queue := job.getList()
-	err = queue.push(data)
+	message := Message{
+		Id: bson.NewObjectId().Hex() ,
+		Data: data,
+	}
+	err = queue.push(message)
 	return
 }
 
-func (job *Job) Pop() (data []byte, err error) {
-	queue := job.getList()
-	data, err = queue.pop()
+
+func (job *Job) Handle(handleFunc func(message Message) bool) (data []byte, err error) {
+	var i int64
+	for i = 0 ; i < job.Num; i++ {
+		index := i
+		go func() {
+			for {
+				message, err := job.List[index].receive()
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+				handleFunc(message)
+			}
+		}()
+
+	}
 	return
 }
 

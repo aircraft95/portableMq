@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"gomq/mq"
 )
@@ -13,11 +12,17 @@ func main()  {
 		"age" : 18,
 	}
 	job.Push(data)
-	res ,_ := job.Pop()
-	da := make(map[string]interface{})
 
-	json.Unmarshal(res, &da)
-	fmt.Println(da)
+	_, _ = job.Handle(func(message mq.Message) bool {
+		data := message.Data
+		fmt.Println(data)
+		return true
+	})
 
+	for {
+		select {
+
+		}
+	}
 }
 
