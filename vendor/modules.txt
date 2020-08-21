@@ -8,8 +8,5 @@ github.com/mediocregopher/radix/v3/trace
 golang.org/x/xerrors
 golang.org/x/xerrors/internal
 # gopkg.in/mgo.v2 v2.0.0-20190816093944-a6b53ec6cb22
-gopkg.in/mgo.v2
 gopkg.in/mgo.v2/bson
 gopkg.in/mgo.v2/internal/json
-gopkg.in/mgo.v2/internal/sasl
-gopkg.in/mgo.v2/internal/scram
