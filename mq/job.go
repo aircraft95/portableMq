@@ -2,14 +2,18 @@
 package mq
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/mediocregopher/radix/v3"
 	"gopkg.in/mgo.v2/bson"
+	"io"
 	"math/big"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -21,6 +25,12 @@ type job struct {
 	list   []*queue
 	redisConn  *radix.Pool
 	handler  func(message Message) bool
+	persistent
+}
+
+type persistent struct {
+	path string
+	mu   sync.RWMutex
 }
 
 //工作池
@@ -29,7 +39,7 @@ var jobPool struct{
 	lock         sync.RWMutex
 }
 
-func NewJob(name string, Num int64, conn *radix.Pool, handler func(message Message) bool) *job {
+func NewJob(name, queueFilePath string, Num int64, conn *radix.Pool, handler func(message Message) bool) *job {
 	name = fmt.Sprintf("mq:job:name:%v", name)
 	jobPool.lock.RLock()
 	if job,ok := jobPool.job[name]; ok {
@@ -56,10 +66,16 @@ func NewJob(name string, Num int64, conn *radix.Pool, handler func(message Messa
 	newJob.doingTable = newJob.name + ":doing"
 	newJob.redisConn = conn
 	newJob.handler = handler
+	newJob.persistent.path = queueFilePath
+	//初始化工作队列
 	newJob.initQueueList()
 
+	//开启redis ack
 	go newJob.rollbackAck()
+	//开启处理协程
 	go newJob.handle()
+	//开启持久化ack 用于取出数据后redis挂掉时的应急方案
+	go newJob.ackFileMessage()
 
 	if jobPool.job == nil {
 		jobPool.job = make(map[string]*job)
@@ -142,7 +158,7 @@ func (job *job) handle() {
 		queue := job.list[i]
 		go func() {
 			for {
-				message, err := queue.receiveMessage()
+				message, err := queue.receiveMessage(job)
 				if err != nil {
 					continue
 				}
@@ -156,6 +172,143 @@ func (job *job) handle() {
 		}()
 	}
 }
+
+
+func (job *job) writeFileQueueJob(message Message) {
+	jsonByte, _ := json.Marshal(message)
+	file, err := os.OpenFile(job.persistent.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0755)
+	if err != nil {
+		return
+	}
+	_, _ = file.WriteString(string(jsonByte)+"\r\n")
+}
+
+func (job *job) readFileQueueJob() (message Message, err error) {
+	job.persistent.mu.Lock()
+	defer job.persistent.mu.Unlock()
+	f, err := os.OpenFile(job.persistent.path, os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		return
+	}
+	line ,err := popLine(f)
+	if err != nil {
+		return
+	}
+	if len(line) == 0 {
+		err = errors.New("file is nil")
+		return
+	}
+
+	lineStr := strings.Trim(string(line), "\r\n")
+	json.Unmarshal([]byte(lineStr), &message)
+	return
+}
+
+//ack被存到文件中的message
+func (job *job) ackFileMessage() {
+	f, err := os.OpenFile(job.persistent.path, os.O_RDWR|os.O_CREATE, 0666)
+	if err != nil {
+		return
+	}
+	//如果文件无法读写默认停用磁盘ack
+	_, err = f.Stat()
+	if err != nil {
+		return
+	}
+
+	for {
+		message, err := job.readFileQueueJob()
+		if err != nil {
+			time.Sleep(time.Second * 1)
+			continue
+		}
+		err = job.getList().push(message)
+		//如果还是无法插入到redis的队列中，就重新写到文件
+		if err != nil {
+			job.writeFileQueueJob(message)
+			time.Sleep(time.Second * 1)
+			continue
+		}
+		fmt.Println("file ack:",message)
+		time.Sleep(time.Second * 1)
+	}
+}
+
+//删除文件第一行代码
+func popLine(f *os.File) ([]byte, error) {
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	buf := bytes.NewBuffer(make([]byte, 0, fi.Size()))
+
+	_, err = f.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+	_, err = io.Copy(buf, f)
+	if err != nil {
+		return nil, err
+	}
+
+	line, err := buf.ReadBytes('\n')
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+
+	_, err = f.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+	nw, err := io.Copy(f, buf)
+	if err != nil {
+		return nil, err
+	}
+	err = f.Truncate(nw)
+	if err != nil {
+		return nil, err
+	}
+	err = f.Sync()
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = f.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+	return line, nil
+}
+
+
+//func (job *job) readQueueLob() []Message {
+//	job.fileLock.Lock()
+//	filePath := "d:/tmp/fail-queue.json"
+//	data, err := ioutil.ReadFile(filePath)
+//	if err != nil {
+//		fmt.Println(err)
+//	}
+//	dataStr := string(data)
+//	arr := strings.Split(dataStr, "\r\n")
+//	arrLen := len(arr)
+//
+//	var messageArr []string
+//	if arrLen > 1 {
+//		messageArr = arr[:arrLen-1]
+//	} else {
+//		return nil
+//	}
+//
+//	var messages []Message
+//	for _, v := range messageArr {
+//		message := Message{}
+//		json.Unmarshal([]byte(v), &message)
+//		messages = append(messages, message)
+//	}
+//
+//	job.fileLock.Lock()
+//	return  messages
+//}
 
 
 type queue struct {
@@ -209,7 +362,7 @@ func (queue *queue) batchPush (messages []Message) (err error)  {
 	return
 }
 
-func (queue *queue) receiveMessage() (message Message , err error)  {
+func (queue *queue) receiveMessage(job *job) (message Message , err error)  {
 	con := queue.redisConn
 	var val []string
 	err = con.Do(radix.Cmd(&val, "BRPOP", queue.name, "10"))
@@ -225,6 +378,11 @@ func (queue *queue) receiveMessage() (message Message , err error)  {
 				err = queue.push(message)
 				if err == nil {
 					break
+				} else {
+					//最后一次还是无法插入，就写到文件中
+					if k == 3 {
+						job.writeFileQueueJob(message)
+					}
 				}
 			}
 		}
