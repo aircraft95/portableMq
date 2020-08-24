@@ -39,7 +39,9 @@ var jobPool struct{
 	lock         sync.RWMutex
 }
 
-func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler func(message Message) bool) *job {
+type handlerFn func(message Message) bool
+
+func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler handlerFn) *job {
 	name = fmt.Sprintf("mq:job:name:%v", name)
 	jobPool.lock.RLock()
 	if job,ok := jobPool.job[name]; ok {
@@ -60,13 +62,17 @@ func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler fu
 	}
 
 	jobPool.lock.Lock()
-	newJob := new(job)
-	newJob.name = name
-	newJob.num = num
-	newJob.doingTable = newJob.name + ":doing"
-	newJob.redisConn = conn
-	newJob.handler = handler
-	newJob.persistent.path = persistentPath
+	newJob := &job{
+		name : 			name,
+		num : 			num,
+		doingTable : 	name + ":doing",
+		redisConn : 	conn,
+		handler :		handler,
+		persistent : 	persistent{
+			path : 		persistentPath,
+		},
+	}
+
 	//初始化工作队列
 	newJob.initQueueList()
 

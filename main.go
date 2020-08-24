@@ -3,6 +3,8 @@ package main
 import (
 	"gomq/mq"
 	"gomq/redis"
+	"net/http"
+	_ "net/http/pprof"
 )
 
 func main()  {
@@ -17,6 +19,8 @@ func main()  {
 	_ = job.Push(data)
 
 	_ = job.Push(data)
+
+	http.ListenAndServe("localhost:6060", nil)
 
 	//
 	//for {
