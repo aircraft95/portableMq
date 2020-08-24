@@ -39,7 +39,7 @@ var jobPool struct{
 	lock         sync.RWMutex
 }
 
-func NewJob(name, queueFilePath string, Num int64, conn *radix.Pool, handler func(message Message) bool) *job {
+func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler func(message Message) bool) *job {
 	name = fmt.Sprintf("mq:job:name:%v", name)
 	jobPool.lock.RLock()
 	if job,ok := jobPool.job[name]; ok {
@@ -62,11 +62,11 @@ func NewJob(name, queueFilePath string, Num int64, conn *radix.Pool, handler fun
 	jobPool.lock.Lock()
 	newJob := new(job)
 	newJob.name = name
-	newJob.num = Num
+	newJob.num = num
 	newJob.doingTable = newJob.name + ":doing"
 	newJob.redisConn = conn
 	newJob.handler = handler
-	newJob.persistent.path = queueFilePath
+	newJob.persistent.path = persistentPath
 	//初始化工作队列
 	newJob.initQueueList()
 
@@ -74,7 +74,7 @@ func NewJob(name, queueFilePath string, Num int64, conn *radix.Pool, handler fun
 	go newJob.rollbackAck()
 	//开启处理协程
 	go newJob.handle()
-	//开启持久化ack 用于取出数据后redis挂掉时的应急方案
+	//开启持久化ack 用于取出数据后redis挂掉时的应急ack
 	go newJob.ackFileMessage()
 
 	if jobPool.job == nil {
@@ -279,37 +279,6 @@ func popLine(f *os.File) ([]byte, error) {
 	}
 	return line, nil
 }
-
-
-//func (job *job) readQueueLob() []Message {
-//	job.fileLock.Lock()
-//	filePath := "d:/tmp/fail-queue.json"
-//	data, err := ioutil.ReadFile(filePath)
-//	if err != nil {
-//		fmt.Println(err)
-//	}
-//	dataStr := string(data)
-//	arr := strings.Split(dataStr, "\r\n")
-//	arrLen := len(arr)
-//
-//	var messageArr []string
-//	if arrLen > 1 {
-//		messageArr = arr[:arrLen-1]
-//	} else {
-//		return nil
-//	}
-//
-//	var messages []Message
-//	for _, v := range messageArr {
-//		message := Message{}
-//		json.Unmarshal([]byte(v), &message)
-//		messages = append(messages, message)
-//	}
-//
-//	job.fileLock.Lock()
-//	return  messages
-//}
-
 
 type queue struct {
 	name   string

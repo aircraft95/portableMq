@@ -1,22 +1,23 @@
 package main
 
 import (
-	"fmt"
 	"gomq/mq"
 	"gomq/redis"
 )
 
 func main()  {
-	mq.NewJob("test", "d:/tmp/fail-queue.json",1, redis.GetPool(), func(message mq.Message) bool {
-		fmt.Println(message)
-		return true
-	})
+	job := mq.NewJob("test", "d:/tmp/fail-queue.json",1, redis.GetPool(), nil)
+	data := map[string]interface{}{
+		"name" : "hello",
+		"age" : 18,
+	}
+	_ = job.Push(data)
 
-	//data := map[string]interface{}{
-	//	"name" : "hello",
-	//	"age" : 18,
-	//}
-	//_ = job.Push(data)
+
+	_ = job.Push(data)
+
+	_ = job.Push(data)
+
 	//
 	//for {
 	//	select {
@@ -24,11 +25,6 @@ func main()  {
 	//	}
 	//}
 
-	//message := mq.Message{
-	//	Id:   bson.NewObjectId().Hex(),
-	//	Data: data,
-	//}
-	//job.WriteQueueLob(message)
 
 
 
