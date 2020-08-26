@@ -42,16 +42,19 @@ type jobPool struct{
 	job map[string]*job
 	lock         sync.RWMutex
 	wg sync.WaitGroup
-	closed    chan struct{}
+	ctx context.Context
+	cancel context.CancelFunc
 }
 
 var JobPool *jobPool
 
 func getJobPool() *jobPool {
 	if JobPool == nil {
+		ctx, cancel := context.WithCancel(context.Background())
 		JobPool = &jobPool{
 			job:  make(map[string]*job),
-			closed : make(chan struct{}),
+			ctx : ctx,
+			cancel : cancel,
 		}
 		go JobPool.closeHandler()
 	}
@@ -61,7 +64,7 @@ func getJobPool() *jobPool {
 func (j *jobPool) closeHandler() {
 	for {
 		select{
-		case <-j.closed:
+		case <-j.ctx.Done():
 			j.wg.Wait() //等待退出完成
 			fmt.Println("退出完成")
 			os.Exit(0)
@@ -301,7 +304,7 @@ func (job *job) initSignalHandler(cancel context.CancelFunc) {
 		job.redisConn.Close()  //关闭redis连接
 		job.wg.Wait() //等待退出完成
 		fmt.Println("job退出完成,通知job连接池")
-		close(JobPool.closed)
+		JobPool.cancel()
 		JobPool.wg.Done()
 	}()
 }
