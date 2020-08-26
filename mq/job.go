@@ -3,6 +3,7 @@ package mq
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -12,9 +13,11 @@ import (
 	"io"
 	"math/big"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -25,6 +28,7 @@ type job struct {
 	list   []*queue
 	redisConn  *radix.Pool
 	handler  func(message Message) bool
+	wg sync.WaitGroup
 	persistent
 }
 
@@ -34,31 +38,58 @@ type persistent struct {
 }
 
 //工作池
-var jobPool struct{
+type jobPool struct{
 	job map[string]*job
 	lock         sync.RWMutex
+	wg sync.WaitGroup
+	closed    chan struct{}
 }
+
+var JobPool *jobPool
+
+func getJobPool() *jobPool {
+	if JobPool == nil {
+		JobPool = &jobPool{
+			job:  make(map[string]*job),
+			closed : make(chan struct{}),
+		}
+		go JobPool.closeHandler()
+	}
+	return JobPool
+}
+
+func (j *jobPool) closeHandler() {
+	for {
+		select{
+		case <-j.closed:
+			j.wg.Wait() //等待退出完成
+			fmt.Println("退出完成")
+			os.Exit(0)
+		}
+	}
+}
+
+
+
 
 type handlerFn func(message Message) bool
 
 func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler handlerFn) *job {
 	name = fmt.Sprintf("mq:job:name:%v", name)
+	jobPool := getJobPool()
 	jobPool.lock.RLock()
 	if job,ok := jobPool.job[name]; ok {
 		jobPool.lock.RUnlock()
-		//如果已经存在job 但是处理函数是空,但是传过来的处理函数非空,就重新装载处理函数
-		if job.handler == nil && handler != nil {
-			jobPool.lock.Lock()
-			jobPool.job[name].handler = handler
-			go jobPool.job[name].handle()
-			jobPool.lock.Unlock()
-		}
 		return job
 	}
 	jobPool.lock.RUnlock()
 
 	if conn == nil {
 		panic(errors.New("bad radix conn"))
+	}
+
+	if handler == nil {
+		panic(errors.New("bad handler"))
 	}
 
 	jobPool.lock.Lock()
@@ -73,25 +104,24 @@ func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler ha
 		},
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	//初始化工作队列
 	newJob.initQueueList()
 
 	//开启redis ack
-	go newJob.rollbackAck()
+	go newJob.rollbackAck(ctx)
 	//开启处理协程
-	go newJob.handle()
+	go newJob.handle(ctx)
 	//开启持久化ack 用于取出数据后redis挂掉时的应急ack
-	go newJob.ackFileMessage()
+	go newJob.ackFileMessage(ctx)
 
-	if jobPool.job == nil {
-		jobPool.job = make(map[string]*job)
-	}
+	newJob.initSignalHandler(cancel)
+
+	jobPool.wg.Add(1)
 	jobPool.job[name] = newJob
 	jobPool.lock.Unlock()
 	return newJob
 }
-
-
 
 func (job *job) initQueueList() {
 	job.list = make([]*queue, job.num)
@@ -102,24 +132,31 @@ func (job *job) initQueueList() {
 }
 
 //负责ack的函数，采用有序集合，分数使用时间戳，获取时间戳是0到目前的时间范围的message,获取到的消息就是需要返回给队列的数据
-func (job *job) rollbackAck () {
+func (job *job) rollbackAck (ctx context.Context) {
 	con := job.redisConn
+	job.wg.Add(1)
 	for {
-		var value []string
-		var message Message
-		expireTime := strconv.FormatInt(time.Now().Unix(), 10)
-		err := con.Do(radix.FlatCmd(&value, "ZRANGEBYSCORE", job.doingTable, "0", expireTime))
-		if err != nil || len(value) == 0 {
-			time.Sleep(time.Second * 1)
-			continue
-		}
-		for _, v := range value {
-			_ = json.Unmarshal([]byte(v), &message)
-			err = job.getList().push(message)
-			if err == nil {
-				err = con.Do(radix.Cmd(&value, "ZREM", job.doingTable, v))
+		select {
+		case <-ctx.Done():
+			job.wg.Done()
+			return
+		default:
+			var value []string
+			var message Message
+			expireTime := strconv.FormatInt(time.Now().Unix(), 10)
+			err := con.Do(radix.FlatCmd(&value, "ZRANGEBYSCORE", job.doingTable, "0", expireTime))
+			if err != nil || len(value) == 0 {
+				time.Sleep(time.Second * 1)
+				continue
 			}
-			fmt.Println("ack:",v)
+			for _, v := range value {
+				_ = json.Unmarshal([]byte(v), &message)
+				err = job.getList().push(message)
+				if err == nil {
+					err = con.Do(radix.Cmd(&value, "ZREM", job.doingTable, v))
+				}
+				fmt.Println("ack:",v)
+			}
 		}
 	}
 }
@@ -155,27 +192,35 @@ func (job *job) BatchPush(data []interface{}) (err error) {
 	return
 }
 
-func (job *job) handle() {
+func (job *job) handle(ctx context.Context) {
 	if job.handler == nil {
 		return
 	}
 	var i int64
 	for i = 0 ; i < job.num; i++ {
 		queue := job.list[i]
-		go func() {
+		job.wg.Add(1)
+		go func(ctx context.Context) {
 			for {
-				message, err := queue.receiveMessage(job)
-				if err != nil {
-					continue
-				}
-				if job.handler(message) {
-					err = queue.deleteMessage(message)
+				select{
+				case <-ctx.Done():
+					job.wg.Done()
+					return
+				default:
+					message, err := queue.receiveMessage(job)
 					if err != nil {
-						fmt.Println(err)
+						continue
+					}
+					if job.handler(message) {
+						err = queue.deleteMessage(message)
+						if err != nil {
+							fmt.Println(err)
+						}
 					}
 				}
+
 			}
-		}()
+		}(ctx)
 	}
 }
 
@@ -211,7 +256,7 @@ func (job *job) readFileQueueJob() (message Message, err error) {
 }
 
 //ack被存到文件中的message
-func (job *job) ackFileMessage() {
+func (job *job) ackFileMessage(ctx context.Context) {
 	f, err := os.OpenFile(job.persistent.path, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return
@@ -221,23 +266,44 @@ func (job *job) ackFileMessage() {
 	if err != nil {
 		return
 	}
+	job.wg.Add(1)
 
 	for {
-		message, err := job.readFileQueueJob()
-		if err != nil {
+		select {
+		case <-ctx.Done():
+			job.wg.Done()
+			return
+		default:
+			message, err := job.readFileQueueJob()
+			if err != nil {
+				time.Sleep(time.Second * 1)
+				continue
+			}
+			err = job.getList().push(message)
+			//如果还是无法插入到redis的队列中，就重新写到文件
+			if err != nil {
+				job.writeFileQueueJob(message)
+				time.Sleep(time.Second * 1)
+				continue
+			}
+			fmt.Println("file ack:",message)
 			time.Sleep(time.Second * 1)
-			continue
 		}
-		err = job.getList().push(message)
-		//如果还是无法插入到redis的队列中，就重新写到文件
-		if err != nil {
-			job.writeFileQueueJob(message)
-			time.Sleep(time.Second * 1)
-			continue
-		}
-		fmt.Println("file ack:",message)
-		time.Sleep(time.Second * 1)
 	}
+}
+
+func (job *job) initSignalHandler(cancel context.CancelFunc) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		<-sig
+		cancel() // 通知各个服务退出
+		job.redisConn.Close()  //关闭redis连接
+		job.wg.Wait() //等待退出完成
+		fmt.Println("job退出完成,通知job连接池")
+		close(JobPool.closed)
+		JobPool.wg.Done()
+	}()
 }
 
 //删除文件第一行代码
