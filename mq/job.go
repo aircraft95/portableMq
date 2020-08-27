@@ -65,8 +65,8 @@ func (j *jobPool) closeHandler() {
 	for {
 		select{
 		case <-j.ctx.Done():
-			j.wg.Wait() //等待退出完成
-			fmt.Println("退出完成")
+			j.wg.Wait() //等待所有job退出完成
+			fmt.Println("exit success")
 			os.Exit(0)
 		}
 	}
@@ -305,9 +305,8 @@ func (job *job) initSignalHandler(cancel context.CancelFunc) {
 		cancel() // 通知各个服务退出
 		job.redisConn.Close()  //关闭redis连接
 		job.wg.Wait() //等待退出完成
-		fmt.Println("job退出完成,通知job连接池")
-		JobPool.cancel()
-		JobPool.wg.Done()
+		JobPool.cancel() //通知job工作池开启退出工作
+		JobPool.wg.Done() //消耗掉该job占用的wg
 	}()
 }
 
