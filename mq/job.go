@@ -111,13 +111,14 @@ func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler ha
 	//初始化工作队列
 	newJob.initQueueList()
 
-	//开启redis ack
-	go newJob.rollbackAck(ctx)
+	//开启redis的消息回滚处理
+	go newJob.rollbackDoingRedisMsg(ctx)
+	//开启file的消息回滚处理(防止redis挂掉的应急方案)
+	go newJob.rollbackDoingFileMsg(ctx)
 	//开启处理协程
 	go newJob.handle(ctx)
-	//开启持久化ack 用于取出数据后redis挂掉时的应急ack
-	go newJob.ackFileMessage(ctx)
 
+	//监听退出信号
 	newJob.initSignalHandler(cancel)
 
 	jobPool.wg.Add(1)
@@ -134,8 +135,8 @@ func (job *job) initQueueList() {
 	}
 }
 
-//负责ack的函数，采用有序集合，分数使用时间戳，获取时间戳是0到目前的时间范围的message,获取到的消息就是需要返回给队列的数据
-func (job *job) rollbackAck (ctx context.Context) {
+//负责回滚redis消息的函数，采用有序集合，分数使用时间戳，获取时间戳是0到目前的时间范围的message,获取到的消息就是需要返回给队列的数据
+func (job *job) rollbackDoingRedisMsg (ctx context.Context) {
 	con := job.redisConn
 	job.wg.Add(1)
 	for {
@@ -158,8 +159,9 @@ func (job *job) rollbackAck (ctx context.Context) {
 				if err == nil {
 					err = con.Do(radix.Cmd(&value, "ZREM", job.doingTable, v))
 				}
-				fmt.Println("ack:",v)
+				fmt.Println("rollback:",v)
 			}
+			time.Sleep(time.Second * 1)
 		}
 	}
 }
@@ -258,13 +260,13 @@ func (job *job) readFileQueueJob() (message Message, err error) {
 	return
 }
 
-//ack被存到文件中的message
-func (job *job) ackFileMessage(ctx context.Context) {
+//负责回滚消息,处理被临时存到文件中的message
+func (job *job) rollbackDoingFileMsg(ctx context.Context) {
 	f, err := os.OpenFile(job.persistent.path, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return
 	}
-	//如果文件无法读写默认停用磁盘ack
+	//如果文件无法读写默认停用磁盘临时保存的方法
 	_, err = f.Stat()
 	if err != nil {
 		return
@@ -289,7 +291,7 @@ func (job *job) ackFileMessage(ctx context.Context) {
 				time.Sleep(time.Second * 1)
 				continue
 			}
-			fmt.Println("file ack:",message)
+			fmt.Println("file rollback:",message)
 			time.Sleep(time.Second * 1)
 		}
 	}
@@ -416,7 +418,7 @@ func (queue *queue) receiveMessage(job *job) (message Message , err error)  {
 	if len(val) == 2 {
 		value := []byte(val[1])
 		json.Unmarshal(value, &message)
-		err = queue.addAck(message)
+		err = queue.addDoing(message)
 		if err != nil {
 			for k :=0 ; k < 4; k ++ {
 				err = queue.push(message)
@@ -436,7 +438,7 @@ func (queue *queue) receiveMessage(job *job) (message Message , err error)  {
 	return
 }
 
-func (queue *queue) addAck(message Message) (err error)  {
+func (queue *queue) addDoing(message Message) (err error)  {
 	con := queue.redisConn
 	dataByte ,err := json.Marshal(message)
 	if err != nil {
@@ -447,7 +449,7 @@ func (queue *queue) addAck(message Message) (err error)  {
 	err = con.Do(radix.Cmd(&ok, "ZADD", queue.doingTable, expireTime, string(dataByte)))
 
 	if !ok {
-		err = errors.New("add ack fail")
+		err = errors.New("add redis doing table fail")
 	}
 	return
 }
