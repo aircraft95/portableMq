@@ -189,16 +189,16 @@ func (j *job) getList() *queue {
 
 // example:
 //
-//job := mq.NewJob("test", "/fail-queue.json", 1, redis.GetPool(), func(message mq.Message) bool {
-//	data := message.Data
-//	fmt.Println(data)
-//	return true
-//})
-//data := map[string]interface{}{
-//"name": "mike",
-//"age":  18,
-//}
-//_ = job.Push(data)
+//	job := mq.NewJob("test", "/fail-queue.json", 1, redis.GetPool(), func(message mq.Message) bool {
+//		data := message.Data
+//		fmt.Println(data)
+//		return true
+//	})
+//	data := map[string]interface{}{
+//		"name": "mike",
+//		"age":  18,
+//	}
+//	_ = job.Push(data)
 //
 func (j *job) Push(data interface{}) (err error) {
 	queue := j.getList()
