@@ -112,8 +112,8 @@ func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler ha
 	go newJob.rollbackDoingRedisMsg(ctx)
 	//开启file的消息回滚处理(防止redis挂掉的应急方案)
 	go newJob.rollbackDoingFileMsg(ctx)
-	//开启处理协程
-	go newJob.handle(ctx)
+	//启动处理中心
+	go newJob.handleCenterRun(ctx)
 
 	//监听退出信号
 	newJob.initSignalHandler(cancel)
@@ -194,35 +194,44 @@ func (j *job) BatchPush(data []interface{}) (err error) {
 	return
 }
 
-func (j *job) handle(ctx context.Context) {
-	if j.handler == nil {
-		return
-	}
+func (j *job) handleCenterRun(ctx context.Context) {
 	var i int64
 	for i = 0; i < j.num; i++ {
-		queue := j.list[i]
+		index := i
 		j.wg.Add(1)
-		go func(ctx context.Context) {
-			for {
-				select {
-				case <-ctx.Done():
-					j.wg.Done()
-					return
-				default:
-					message, err := queue.receiveMessage(j)
-					if err != nil {
-						continue
-					}
-					if j.handler(message) {
-						err = queue.deleteMessage(message)
-						if err != nil {
-							fmt.Println(err)
-						}
-					}
-				}
+		go func(ctx context.Context, index int64) {
+			j.handleCallback(ctx, index)
+		}(ctx, index)
+	}
+}
 
+func (j *job) handleCallback(ctx context.Context, index int64) {
+	//拦截错误,重启处理goroutine
+	defer func(ctx context.Context, index int64) {
+		if r := recover(); r != nil {
+			fmt.Printf("handle have been err : %v \r\n", r)
+			fmt.Printf("restart job %v handle goroutine index: %v \r\n", j.name, index)
+			j.handleCallback(ctx, index)
+		}
+	}(ctx, index)
+	queue := j.list[index]
+	for {
+		select {
+		case <-ctx.Done():
+			j.wg.Done()
+			return
+		default:
+			message, err := queue.receiveMessage(j)
+			if err != nil {
+				continue
 			}
-		}(ctx)
+			if j.handler(message) {
+				err = queue.deleteMessage(message)
+				if err != nil {
+					fmt.Println(err)
+				}
+			}
+		}
 	}
 }
 

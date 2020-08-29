@@ -6,37 +6,31 @@ import (
 	"gomq/redis"
 	"net/http"
 	_ "net/http/pprof"
+	"time"
 )
 
-func main()  {
-	job := mq.NewJob("test", "d:/tmp/fail-queue.json",100, redis.GetPool(), func(message mq.Message) bool {
-		fmt.Println(message)
-		return true
-	})
-
-	job1 := mq.NewJob("test1", "d:/tmp/fail-queue1.json",100, redis.GetPool(), func(message mq.Message) bool {
-		fmt.Println(message)
-		return true
-	})
-
-	job2 := mq.NewJob("test2", "d:/tmp/fail-queue2.json",100, redis.GetPool(), func(message mq.Message) bool {
-		fmt.Println(message)
+func main() {
+	job := mq.NewJob("test", "d:/tmp/fail-queue.json", 1, redis.GetPool(), func(message mq.Message) bool {
+		data := message.Data.(map[string]interface{})
+		fmt.Println(data)
+		fmt.Println(data["age"].(float64))
 		return true
 	})
 
 	data := map[string]interface{}{
-		"name" : "hello",
-		"age" : 18,
+		"name": "hello",
+		"age":  18,
 	}
 	_ = job.Push(data)
 
-
-	_ = job2.Push(data)
-
-	_ = job1.Push(data)
+	go func() {
+		time.Sleep(time.Second * 10)
+		data := map[string]interface{}{
+			"name": "mmm",
+		}
+		_ = job.Push(data)
+	}()
 
 	http.ListenAndServe("localhost:6060", nil)
 
-
 }
-
