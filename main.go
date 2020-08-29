@@ -13,15 +13,24 @@ func main() {
 	job := mq.NewJob("test", "d:/tmp/fail-queue.json", 1, redis.GetPool(), func(message mq.Message) bool {
 		data := message.Data.(map[string]interface{})
 		fmt.Println(data)
-		fmt.Println(data["age"].(float64))
 		return true
 	})
 
-	data := map[string]interface{}{
-		"name": "hello",
+	mike := map[string]interface{}{
+		"name": "mike",
 		"age":  18,
 	}
-	_ = job.Push(data)
+
+	john := map[string]interface{}{
+		"name": "john",
+		"age":  20,
+	}
+
+	data := []interface{}{
+		mike,
+		john,
+	}
+	_ = job.BatchPush(data)
 
 	go func() {
 		time.Sleep(time.Second * 10)

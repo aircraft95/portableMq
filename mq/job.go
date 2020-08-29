@@ -22,18 +22,24 @@ import (
 )
 
 type job struct {
-	name       string
-	num        int64
+	//队列名称
+	name string
+	//开启list数量
+	num int64
+	//消息被POP后,等待ack的doing表的redis key名 在redis是有序集合
 	doingTable string
-	list       []*queue
-	redisConn  *radix.Pool
-	handler    func(message Message) bool
-	wg         sync.WaitGroup
+	//开启的list
+	list []*queue
+	//redis 连接池指针
+	redisConn *radix.Pool
+	//callback处理消息的函数
+	handler func(message Message) bool
+	wg      sync.WaitGroup
 	persistent
 }
 
 type persistent struct {
-	path string
+	path string //redis连接失效,临时存放message的文件地址
 	mu   sync.RWMutex
 }
 
@@ -64,6 +70,7 @@ func getJobPool() *jobPool {
 func (j *jobPool) closeHandler() {
 	for {
 		select {
+		//当job接受到退出信号后,最先退出的job后会发送jobPool池准备退出的信息
 		case <-j.ctx.Done():
 			j.wg.Wait() //等待所有job退出完成
 			fmt.Println("exit success")
@@ -74,6 +81,14 @@ func (j *jobPool) closeHandler() {
 
 type handlerFn func(message Message) bool
 
+// example:
+//
+//job := mq.NewJob("test", "/fail-queue.json", 1, redis.GetPool(), func(message mq.Message) bool {
+//	data := message.Data
+//	fmt.Println(data)
+//	return true
+//})
+//
 func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler handlerFn) *job {
 	name = fmt.Sprintf("mq:job:name:%v", name)
 	jobPool := getJobPool()
@@ -104,6 +119,7 @@ func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler ha
 		},
 	}
 
+	//注册一个退出信号
 	ctx, cancel := context.WithCancel(context.Background())
 	//初始化工作队列
 	newJob.initQueueList()
@@ -138,6 +154,7 @@ func (j *job) rollbackDoingRedisMsg(ctx context.Context) {
 	j.wg.Add(1)
 	for {
 		select {
+		//收到退出信号处理
 		case <-ctx.Done():
 			j.wg.Done()
 			return
@@ -145,6 +162,7 @@ func (j *job) rollbackDoingRedisMsg(ctx context.Context) {
 			var value []string
 			var message Message
 			expireTime := strconv.FormatInt(time.Now().Unix(), 10)
+			//取出有序集合中所有超时消息
 			err := con.Do(radix.FlatCmd(&value, "ZRANGEBYSCORE", j.doingTable, "0", expireTime))
 			if err != nil || len(value) == 0 {
 				time.Sleep(time.Second * 1)
@@ -169,6 +187,19 @@ func (j *job) getList() *queue {
 	return j.list[key]
 }
 
+// example:
+//
+//job := mq.NewJob("test", "/fail-queue.json", 1, redis.GetPool(), func(message mq.Message) bool {
+//	data := message.Data
+//	fmt.Println(data)
+//	return true
+//})
+//data := map[string]interface{}{
+//"name": "mike",
+//"age":  18,
+//}
+//_ = job.Push(data)
+//
 func (j *job) Push(data interface{}) (err error) {
 	queue := j.getList()
 	message := Message{
@@ -179,6 +210,29 @@ func (j *job) Push(data interface{}) (err error) {
 	return
 }
 
+// example:
+//
+//	job := mq.NewJob("test", "/fail-queue.json", 1, redis.GetPool(), func(message mq.Message) bool {
+//		data := message.Data
+//		fmt.Println(data)
+//		return true
+//	})
+//	mike := map[string]interface{}{
+//		"name": "mike",
+//		"age":  18,
+//	}
+//
+//	john := map[string]interface{}{
+//		"name": "john",
+//		"age":  20,
+//	}
+//
+//	data := []interface{}{
+//		mike,
+//		john,
+//	}
+//	_ = job.BatchPush(data)
+//
 func (j *job) BatchPush(data []interface{}) (err error) {
 	queue := j.getList()
 	var messages []Message
@@ -206,7 +260,7 @@ func (j *job) handleCenterRun(ctx context.Context) {
 }
 
 func (j *job) handleCallback(ctx context.Context, index int64) {
-	//拦截错误,重启处理goroutine
+	//拦截错误,重启处理函数
 	defer func(ctx context.Context, index int64) {
 		if r := recover(); r != nil {
 			fmt.Printf("handle have been err : %v \r\n", r)
@@ -307,11 +361,10 @@ func (j *job) initSignalHandler(cancel context.CancelFunc) {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sig
-		cancel()            // 通知各个服务退出
-		j.redisConn.Close() //关闭redis连接
-		j.wg.Wait()         //等待退出完成
-		JobPool.cancel()    //通知job工作池开启退出工作
-		JobPool.wg.Done()   //消耗掉该job占用的wg
+		cancel()          // 通知各个服务退出
+		j.wg.Wait()       //等待退出完成
+		JobPool.cancel()  //通知job工作池开启退出工作
+		JobPool.wg.Done() //消耗掉该job占用的wg
 	}()
 }
 
@@ -374,7 +427,11 @@ type Message struct {
 
 func newQueue(jobName string, i int64, redisConn *radix.Pool) *queue {
 	key := fmt.Sprintf(":list-%d", i)
-	queue := &queue{name: jobName + key, doingTable: jobName + ":doing", redisConn: redisConn}
+	queue := &queue{
+		name:       jobName + key,
+		doingTable: jobName + ":doing",
+		redisConn:  redisConn,
+	}
 	return queue
 }
 
@@ -473,6 +530,7 @@ func (q *queue) deleteMessage(message Message) (err error) {
 	return
 }
 
+//随机函数
 func rangeRand(min, max int64) int64 {
 	if min > max {
 		panic("the min is greater than max!")
