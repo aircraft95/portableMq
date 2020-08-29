@@ -124,37 +124,37 @@ func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler ha
 	return newJob
 }
 
-func (job *job) initQueueList() {
-	job.list = make([]*queue, job.num)
+func (j *job) initQueueList() {
+	j.list = make([]*queue, j.num)
 	var i int64
-	for i = 0; i < job.num; i++ {
-		job.list[i] = newQueue(job.name, i, job.redisConn)
+	for i = 0; i < j.num; i++ {
+		j.list[i] = newQueue(j.name, i, j.redisConn)
 	}
 }
 
 //负责回滚redis消息的函数，采用有序集合，分数使用时间戳，获取时间戳是0到目前的时间范围的message,获取到的消息就是需要返回给队列的数据
-func (job *job) rollbackDoingRedisMsg(ctx context.Context) {
-	con := job.redisConn
-	job.wg.Add(1)
+func (j *job) rollbackDoingRedisMsg(ctx context.Context) {
+	con := j.redisConn
+	j.wg.Add(1)
 	for {
 		select {
 		case <-ctx.Done():
-			job.wg.Done()
+			j.wg.Done()
 			return
 		default:
 			var value []string
 			var message Message
 			expireTime := strconv.FormatInt(time.Now().Unix(), 10)
-			err := con.Do(radix.FlatCmd(&value, "ZRANGEBYSCORE", job.doingTable, "0", expireTime))
+			err := con.Do(radix.FlatCmd(&value, "ZRANGEBYSCORE", j.doingTable, "0", expireTime))
 			if err != nil || len(value) == 0 {
 				time.Sleep(time.Second * 1)
 				continue
 			}
 			for _, v := range value {
 				_ = json.Unmarshal([]byte(v), &message)
-				err = job.getList().push(message)
+				err = j.getList().push(message)
 				if err == nil {
-					err = con.Do(radix.Cmd(&value, "ZREM", job.doingTable, v))
+					err = con.Do(radix.Cmd(&value, "ZREM", j.doingTable, v))
 				}
 				fmt.Println("rollback:", v)
 			}
@@ -163,14 +163,14 @@ func (job *job) rollbackDoingRedisMsg(ctx context.Context) {
 	}
 }
 
-func (job *job) getList() *queue {
+func (j *job) getList() *queue {
 	//随机分配到某个list
-	key := rangeRand(0, job.num-1)
-	return job.list[key]
+	key := rangeRand(0, j.num-1)
+	return j.list[key]
 }
 
-func (job *job) Push(data interface{}) (err error) {
-	queue := job.getList()
+func (j *job) Push(data interface{}) (err error) {
+	queue := j.getList()
 	message := Message{
 		Id:   bson.NewObjectId().Hex(),
 		Data: data,
@@ -179,8 +179,8 @@ func (job *job) Push(data interface{}) (err error) {
 	return
 }
 
-func (job *job) BatchPush(data []interface{}) (err error) {
-	queue := job.getList()
+func (j *job) BatchPush(data []interface{}) (err error) {
+	queue := j.getList()
 	var messages []Message
 	for _, v := range data {
 		message := Message{
@@ -194,26 +194,26 @@ func (job *job) BatchPush(data []interface{}) (err error) {
 	return
 }
 
-func (job *job) handle(ctx context.Context) {
-	if job.handler == nil {
+func (j *job) handle(ctx context.Context) {
+	if j.handler == nil {
 		return
 	}
 	var i int64
-	for i = 0; i < job.num; i++ {
-		queue := job.list[i]
-		job.wg.Add(1)
+	for i = 0; i < j.num; i++ {
+		queue := j.list[i]
+		j.wg.Add(1)
 		go func(ctx context.Context) {
 			for {
 				select {
 				case <-ctx.Done():
-					job.wg.Done()
+					j.wg.Done()
 					return
 				default:
-					message, err := queue.receiveMessage(job)
+					message, err := queue.receiveMessage(j)
 					if err != nil {
 						continue
 					}
-					if job.handler(message) {
+					if j.handler(message) {
 						err = queue.deleteMessage(message)
 						if err != nil {
 							fmt.Println(err)
@@ -226,19 +226,19 @@ func (job *job) handle(ctx context.Context) {
 	}
 }
 
-func (job *job) writeFileQueueJob(message Message) {
+func (j *job) writeFileQueueJob(message Message) {
 	jsonByte, _ := json.Marshal(message)
-	file, err := os.OpenFile(job.persistent.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0755)
+	file, err := os.OpenFile(j.persistent.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0755)
 	if err != nil {
 		return
 	}
 	_, _ = file.WriteString(string(jsonByte) + "\r\n")
 }
 
-func (job *job) readFileQueueJob() (message Message, err error) {
-	job.persistent.mu.Lock()
-	defer job.persistent.mu.Unlock()
-	f, err := os.OpenFile(job.persistent.path, os.O_RDWR|os.O_CREATE, 0666)
+func (j *job) readFileQueueJob() (message Message, err error) {
+	j.persistent.mu.Lock()
+	defer j.persistent.mu.Unlock()
+	f, err := os.OpenFile(j.persistent.path, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return
 	}
@@ -257,8 +257,8 @@ func (job *job) readFileQueueJob() (message Message, err error) {
 }
 
 //负责回滚消息,处理被临时存到文件中的message
-func (job *job) rollbackDoingFileMsg(ctx context.Context) {
-	f, err := os.OpenFile(job.persistent.path, os.O_RDWR|os.O_CREATE, 0666)
+func (j *job) rollbackDoingFileMsg(ctx context.Context) {
+	f, err := os.OpenFile(j.persistent.path, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return
 	}
@@ -267,23 +267,23 @@ func (job *job) rollbackDoingFileMsg(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	job.wg.Add(1)
+	j.wg.Add(1)
 
 	for {
 		select {
 		case <-ctx.Done():
-			job.wg.Done()
+			j.wg.Done()
 			return
 		default:
-			message, err := job.readFileQueueJob()
+			message, err := j.readFileQueueJob()
 			if err != nil {
 				time.Sleep(time.Second * 1)
 				continue
 			}
-			err = job.getList().push(message)
+			err = j.getList().push(message)
 			//如果还是无法插入到redis的队列中，就重新写到文件
 			if err != nil {
-				job.writeFileQueueJob(message)
+				j.writeFileQueueJob(message)
 				time.Sleep(time.Second * 1)
 				continue
 			}
@@ -293,16 +293,16 @@ func (job *job) rollbackDoingFileMsg(ctx context.Context) {
 	}
 }
 
-func (job *job) initSignalHandler(cancel context.CancelFunc) {
+func (j *job) initSignalHandler(cancel context.CancelFunc) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sig
-		cancel()              // 通知各个服务退出
-		job.redisConn.Close() //关闭redis连接
-		job.wg.Wait()         //等待退出完成
-		JobPool.cancel()      //通知job工作池开启退出工作
-		JobPool.wg.Done()     //消耗掉该job占用的wg
+		cancel()            // 通知各个服务退出
+		j.redisConn.Close() //关闭redis连接
+		j.wg.Wait()         //等待退出完成
+		JobPool.cancel()    //通知job工作池开启退出工作
+		JobPool.wg.Done()   //消耗掉该job占用的wg
 	}()
 }
 
@@ -369,7 +369,7 @@ func newQueue(jobName string, i int64, redisConn *radix.Pool) *queue {
 	return queue
 }
 
-func (queue *queue) push(message Message) (err error) {
+func (q *queue) push(message Message) (err error) {
 	dataByte, err := json.Marshal(message)
 
 	if err != nil {
@@ -380,43 +380,43 @@ func (queue *queue) push(message Message) (err error) {
 		err = errors.New("data is nil")
 		return
 	}
-	con := queue.redisConn
+	con := q.redisConn
 	var ok bool
-	err = con.Do(radix.Cmd(&ok, "LPUSH", queue.name, string(dataByte)))
+	err = con.Do(radix.Cmd(&ok, "LPUSH", q.name, string(dataByte)))
 	return
 }
 
-func (queue *queue) batchPush(messages []Message) (err error) {
+func (q *queue) batchPush(messages []Message) (err error) {
 	if len(messages) == 0 {
 		err = errors.New("data is nil")
 		return
 	}
-	addArgs := []string{queue.name}
+	addArgs := []string{q.name}
 	for _, message := range messages {
 		dataByte, _ := json.Marshal(message)
 		addArgs = append(addArgs, string(dataByte))
 	}
 
-	con := queue.redisConn
+	con := q.redisConn
 	var ok bool
 	err = con.Do(radix.Cmd(&ok, "LPUSH", addArgs...))
 	return
 }
 
-func (queue *queue) receiveMessage(job *job) (message Message, err error) {
-	con := queue.redisConn
+func (q *queue) receiveMessage(job *job) (message Message, err error) {
+	con := q.redisConn
 	var val []string
-	err = con.Do(radix.Cmd(&val, "BRPOP", queue.name, "10"))
+	err = con.Do(radix.Cmd(&val, "BRPOP", q.name, "10"))
 	if err != nil {
 		return
 	}
 	if len(val) == 2 {
 		value := []byte(val[1])
 		json.Unmarshal(value, &message)
-		err = queue.addDoing(message)
+		err = q.addDoing(message)
 		if err != nil {
 			for k := 0; k < 4; k++ {
-				err = queue.push(message)
+				err = q.push(message)
 				if err == nil {
 					break
 				} else {
@@ -433,15 +433,15 @@ func (queue *queue) receiveMessage(job *job) (message Message, err error) {
 	return
 }
 
-func (queue *queue) addDoing(message Message) (err error) {
-	con := queue.redisConn
+func (q *queue) addDoing(message Message) (err error) {
+	con := q.redisConn
 	dataByte, err := json.Marshal(message)
 	if err != nil {
 		return
 	}
 	expireTime := strconv.FormatInt(time.Now().Unix()+60, 10)
 	var ok bool
-	err = con.Do(radix.Cmd(&ok, "ZADD", queue.doingTable, expireTime, string(dataByte)))
+	err = con.Do(radix.Cmd(&ok, "ZADD", q.doingTable, expireTime, string(dataByte)))
 
 	if !ok {
 		err = errors.New("add redis doing table fail")
@@ -449,14 +449,14 @@ func (queue *queue) addDoing(message Message) (err error) {
 	return
 }
 
-func (queue *queue) deleteMessage(message Message) (err error) {
-	con := queue.redisConn
+func (q *queue) deleteMessage(message Message) (err error) {
+	con := q.redisConn
 	dataByte, err := json.Marshal(message)
 	if err != nil {
 		return
 	}
 	var ok bool
-	err = con.Do(radix.Cmd(&ok, "ZREM", queue.doingTable, string(dataByte)))
+	err = con.Do(radix.Cmd(&ok, "ZREM", q.doingTable, string(dataByte)))
 
 	if !ok {
 		err = errors.New("delete message fail")
