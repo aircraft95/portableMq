@@ -170,7 +170,7 @@ func (j *job) rollbackDoingRedisMsg(ctx context.Context) {
 			}
 			for _, v := range value {
 				_ = json.Unmarshal([]byte(v), &message)
-				err = j.getList().push(message)
+				err = j.getQueue().push(message)
 				if err == nil {
 					err = con.Do(radix.Cmd(&value, "ZREM", j.doingTable, v))
 				}
@@ -181,8 +181,8 @@ func (j *job) rollbackDoingRedisMsg(ctx context.Context) {
 	}
 }
 
-func (j *job) getList() *queue {
-	//随机分配到某个list
+func (j *job) getQueue() *queue {
+	//随机分配到某个queue
 	key := rangeRand(0, j.num-1)
 	return j.queue[key]
 }
@@ -201,7 +201,7 @@ func (j *job) getList() *queue {
 //	_ = job.Push(data)
 //
 func (j *job) Push(data interface{}) (err error) {
-	queue := j.getList()
+	queue := j.getQueue()
 	message := Message{
 		Id:   bson.NewObjectId().Hex(),
 		Data: data,
@@ -234,7 +234,7 @@ func (j *job) Push(data interface{}) (err error) {
 //	_ = job.BatchPush(data)
 //
 func (j *job) BatchPush(data []interface{}) (err error) {
-	queue := j.getList()
+	queue := j.getQueue()
 	var messages []Message
 	for _, v := range data {
 		message := Message{
@@ -343,7 +343,7 @@ func (j *job) rollbackDoingFileMsg(ctx context.Context) {
 				time.Sleep(time.Second * 1)
 				continue
 			}
-			err = j.getList().push(message)
+			err = j.getQueue().push(message)
 			//如果还是无法插入到redis的队列中，就重新写到文件
 			if err != nil {
 				j.writeFileQueueJob(message)
