@@ -29,7 +29,7 @@ type job struct {
 	//消息被POP后,等待ack的doing表的redis key名 在redis是有序集合
 	doingTable string
 	//开启的list
-	list []*queue
+	queue []*queue
 	//redis 连接池指针
 	redisConn *radix.Pool
 	//callback处理消息的函数
@@ -141,10 +141,10 @@ func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler ha
 }
 
 func (j *job) initQueueList() {
-	j.list = make([]*queue, j.num)
+	j.queue = make([]*queue, j.num)
 	var i int64
 	for i = 0; i < j.num; i++ {
-		j.list[i] = newQueue(j.name, i, j.redisConn)
+		j.queue[i] = newQueue(j.name, i, j.redisConn)
 	}
 }
 
@@ -184,7 +184,7 @@ func (j *job) rollbackDoingRedisMsg(ctx context.Context) {
 func (j *job) getList() *queue {
 	//随机分配到某个list
 	key := rangeRand(0, j.num-1)
-	return j.list[key]
+	return j.queue[key]
 }
 
 // example:
@@ -268,7 +268,7 @@ func (j *job) handleCallback(ctx context.Context, index int64) {
 			j.handleCallback(ctx, index)
 		}
 	}(ctx, index)
-	queue := j.list[index]
+	queue := j.queue[index]
 	for {
 		select {
 		case <-ctx.Done():
@@ -426,9 +426,9 @@ type Message struct {
 }
 
 func newQueue(jobName string, i int64, redisConn *radix.Pool) *queue {
-	key := fmt.Sprintf(":list-%d", i)
+	name := fmt.Sprintf("%s:queue-%d", jobName, i)
 	queue := &queue{
-		name:       jobName + key,
+		name:       name,
 		doingTable: jobName + ":doing",
 		redisConn:  redisConn,
 	}
