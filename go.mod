@@ -1,4 +1,4 @@
-module github.com/nobita95/portableMq
+module github.com/aircraft95/portableMq
 
 go 1.13
 
