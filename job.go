@@ -52,19 +52,19 @@ type jobPool struct {
 	cancel context.CancelFunc
 }
 
-var JobPool *jobPool
+var pool *jobPool
 
 func getJobPool() *jobPool {
-	if JobPool == nil {
+	if pool == nil {
 		ctx, cancel := context.WithCancel(context.Background())
-		JobPool = &jobPool{
+		pool = &jobPool{
 			job:    make(map[string]*job),
 			ctx:    ctx,
 			cancel: cancel,
 		}
-		go JobPool.closeHandler()
+		go pool.closeHandler()
 	}
-	return JobPool
+	return pool
 }
 
 func (j *jobPool) closeHandler() {
@@ -373,10 +373,10 @@ func (j *job) initSignalHandler(cancel context.CancelFunc) {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sig
-		cancel()          // 通知各个服务退出
-		j.wg.Wait()       //等待退出完成
-		JobPool.cancel()  //通知job工作池开启退出工作
-		JobPool.wg.Done() //消耗掉该job占用的wg
+		cancel()       // 通知各个服务退出
+		j.wg.Wait()    //等待退出完成
+		pool.cancel()  //通知job工作池开启退出工作
+		pool.wg.Done() //消耗掉该job占用的wg
 	}()
 }
 
