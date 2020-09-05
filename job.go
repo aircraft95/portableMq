@@ -1,5 +1,5 @@
 //golang+redis 简单版mq ,有ack功能
-package mq
+package gomq
 
 import (
 	"bytes"
@@ -138,6 +138,18 @@ func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler ha
 	jobPool.job[name] = newJob
 	jobPool.lock.Unlock()
 	return newJob
+}
+
+func GetJob(name string) (*job, error) {
+	name = fmt.Sprintf("mq:job:name:%v", name)
+	jobPool := getJobPool()
+	jobPool.lock.RLock()
+	defer jobPool.lock.RUnlock()
+	if job, ok := jobPool.job[name]; ok {
+		return job, nil
+	} else {
+		return nil, errors.New("job not exists")
+	}
 }
 
 func (j *job) initQueueList() {
