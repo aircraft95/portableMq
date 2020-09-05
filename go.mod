@@ -1,4 +1,4 @@
-module gomq
+module github.com/nobita95/portableMq
 
 go 1.13
 

@@ -1,5 +1,5 @@
 //golang+redis 简单版mq ,有ack功能
-package gomq
+package portableMq
 
 import (
 	"bytes"
