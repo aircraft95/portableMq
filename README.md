@@ -34,10 +34,10 @@ func main() {
 		"name": "mike",
 		"age":  32,
 	}
-  //Immediate message
-  _ = job.Push(data)
+        //Immediate message
+	_ = job.Push(data)
   
-  //DelayPush message
+        //DelayPush message
 	_ = job.DelayPush(data, 50)
 
 	time.Sleep(time.Second * 100)
