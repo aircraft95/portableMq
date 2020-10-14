@@ -260,6 +260,29 @@ func (j *job) BatchPush(data []interface{}) (err error) {
 	return
 }
 
+// example:
+//
+//	job := mq.NewJob("test", "/fail-queue.json", 1, redis.GetPool(), func(message mq.Message) bool {
+//		data := message.Data
+//		fmt.Println(data)
+//		return true
+//	})
+//	data := map[string]interface{}{
+//		"name": "mike",
+//		"age":  18,
+//	}
+//	_ = job.DelayPush(data, 300)
+//
+func (j *job) DelayPush(data interface{}, sec int64) (err error) {
+	queue := j.getQueue()
+	message := Message{
+		Id:   bson.NewObjectId().Hex(),
+		Data: data,
+	}
+	err = queue.delayPush(message, sec)
+	return
+}
+
 func (j *job) handleCenterRun(ctx context.Context) {
 	var i int64
 	for i = 0; i < j.num; i++ {
@@ -507,6 +530,22 @@ func (q *queue) receiveMessage(job *job) (message Message, err error) {
 		}
 	} else {
 		err = errors.New("no message")
+	}
+	return
+}
+
+func (q *queue) delayPush(message Message, sec int64) (err error) {
+	con := q.redisConn
+	dataByte, err := json.Marshal(message)
+	if err != nil {
+		return
+	}
+	expireTime := strconv.FormatInt(time.Now().Unix()+ sec, 10)
+	var ok bool
+	err = con.Do(radix.Cmd(&ok, "ZADD", q.doingTable, expireTime, string(dataByte)))
+
+	if !ok {
+		err = errors.New("add delay queue fail")
 	}
 	return
 }
