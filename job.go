@@ -50,21 +50,32 @@ type jobPool struct {
 	wg     sync.WaitGroup
 	ctx    context.Context
 	cancel context.CancelFunc
+	closeCallback func()
 }
 
 var pool *jobPool
 
 func getJobPool() *jobPool {
 	if pool == nil {
+		_ = InitJobPool(nil)
+	}
+	return pool
+}
+
+func InitJobPool(closeCallback func()) error {
+	if pool == nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		pool = &jobPool{
 			job:    make(map[string]*job),
 			ctx:    ctx,
 			cancel: cancel,
+			closeCallback: closeCallback,
 		}
 		go pool.closeHandler()
+	} else {
+		return errors.New("pool exists")
 	}
-	return pool
+	return nil
 }
 
 func (j *jobPool) closeHandler() {
@@ -74,7 +85,12 @@ func (j *jobPool) closeHandler() {
 		case <-j.ctx.Done():
 			j.wg.Wait() //等待所有job退出完成
 			fmt.Println("exit success")
-			os.Exit(0)
+			if j.closeCallback == nil {
+				os.Exit(0)
+			} else {
+				j.closeCallback()
+			}
+			
 		}
 	}
 }
