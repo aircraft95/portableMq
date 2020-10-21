@@ -45,12 +45,13 @@ type persistent struct {
 
 //工作池
 type jobPool struct {
-	job    map[string]*job
-	lock   sync.RWMutex
-	wg     sync.WaitGroup
-	ctx    context.Context
-	cancel context.CancelFunc
-	closeCallback func()
+	job                 map[string]*job
+	lock                sync.RWMutex
+	wg                  sync.WaitGroup
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	beforeCloseCallback func() //when all job have been closed , execute this function
+
 }
 
 var pool *jobPool
@@ -62,14 +63,14 @@ func getJobPool() *jobPool {
 	return pool
 }
 
-func InitJobPool(closeCallback func()) error {
+func InitJobPool(beforeCloseCallback func()) error {
 	if pool == nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		pool = &jobPool{
-			job:    make(map[string]*job),
-			ctx:    ctx,
-			cancel: cancel,
-			closeCallback: closeCallback,
+			job:                 make(map[string]*job),
+			ctx:                 ctx,
+			cancel:              cancel,
+			beforeCloseCallback: beforeCloseCallback,
 		}
 		go pool.closeHandler()
 	} else {
@@ -84,18 +85,17 @@ func (j *jobPool) closeHandler() {
 		//当job接受到退出信号后,最先退出的job后会发送jobPool池准备退出的信息
 		case <-j.ctx.Done():
 			j.wg.Wait() //等待所有job退出完成
-			fmt.Println("exit success")
-			if j.closeCallback == nil {
+			if j.beforeCloseCallback == nil {
 				os.Exit(0)
 			} else {
-				j.closeCallback()
+				j.beforeCloseCallback()
 			}
-			
+
 		}
 	}
 }
 
-type handlerFn func(message Message) bool
+type handlerFunc func(message Message) bool
 
 // example:
 //
@@ -105,7 +105,7 @@ type handlerFn func(message Message) bool
 //	return true
 //})
 //
-func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler handlerFn) *job {
+func NewJob(name, persistentPath string, num int64, conn *radix.Pool, handler handlerFunc) *job {
 	name = fmt.Sprintf("mq:job:name:%v", name)
 	jobPool := getJobPool()
 	jobPool.lock.RLock()
@@ -556,7 +556,7 @@ func (q *queue) delayPush(message Message, sec int64) (err error) {
 	if err != nil {
 		return
 	}
-	expireTime := strconv.FormatInt(time.Now().Unix()+ sec, 10)
+	expireTime := strconv.FormatInt(time.Now().Unix()+sec, 10)
 	var ok bool
 	err = con.Do(radix.Cmd(&ok, "ZADD", q.doingTable, expireTime, string(dataByte)))
 
