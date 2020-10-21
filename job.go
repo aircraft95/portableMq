@@ -392,7 +392,7 @@ func (j *job) rollbackDoingFileMsg(ctx context.Context) {
 }
 
 func (j *job) initSignalHandler(cancel context.CancelFunc) {
-	sig := make(chan os.Signal, 1)
+	sig := make(chan os.Signal)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sig
