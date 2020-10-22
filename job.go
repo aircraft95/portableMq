@@ -24,7 +24,7 @@ import (
 type job struct {
 	//队列名称
 	name string
-	//开启list数量
+	//open list num
 	num int64
 	//消息被POP后,等待ack的doing表的redis key名 在redis是有序集合
 	doingTable string
@@ -51,7 +51,6 @@ type jobPool struct {
 	ctx                 context.Context
 	cancel              context.CancelFunc
 	beforeCloseCallback func() //when all job have been closed , execute this function
-
 }
 
 var pool *jobPool
