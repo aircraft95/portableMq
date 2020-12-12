@@ -197,9 +197,14 @@ func (j *job) rollbackDoingRedisMsg(ctx context.Context) {
 			}
 			for _, v := range value {
 				_ = json.Unmarshal([]byte(v), &message)
-				err = j.getQueue().push(message)
-				if err == nil {
-					err = con.Do(radix.Cmd(&value, "ZREM", j.doingTable, v))
+
+				var ok bool
+				err = con.Do(radix.Cmd(&ok, "ZREM", j.doingTable, v))
+				if ok {
+					err = j.getQueue().push(message)
+					if err != nil {
+						j.writeFileQueueJob(message)
+					}
 				}
 				fmt.Println("rollback:", v)
 			}
@@ -575,9 +580,9 @@ func (q *queue) addDoing(message Message) (err error) {
 	var ok bool
 	err = con.Do(radix.Cmd(&ok, "ZADD", q.doingTable, expireTime, string(dataByte)))
 
-	if !ok {
-		err = errors.New("add redis doing table fail")
-	}
+	//if !ok {
+	//	err = errors.New("add redis doing table fail")
+	//}
 	return
 }
 
