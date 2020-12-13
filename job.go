@@ -537,8 +537,8 @@ func (q *queue) receiveMessage(job *job) (message Message, err error) {
 		err = q.addDoing(message)
 		if err != nil {
 			for k := 0; k < 4; k++ {
-				err = q.push(message)
-				if err == nil {
+				errs := q.push(message)
+				if errs == nil {
 					break
 				} else {
 					//最后一次还是无法插入，就写到文件中
